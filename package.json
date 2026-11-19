@@ -1,0 +1,19 @@
+{
+  "name": "nexplay-mobile",
+  "version": "1.0.1",
+  "private": true,
+  "description": "NEXPLAY HTML game app wrapped with Capacitor for Android",
+  "scripts": {
+    "build": "node -e \"console.log('NEXPLAY static web assets are in www/.')\"",
+    "android:prepare": "node scripts/prepare-android.mjs",
+    "android:debug": "npm run android:prepare && cd android && ./gradlew assembleDebug",
+    "cap:sync": "npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/android": "^8.0.0"
+  }
+}
