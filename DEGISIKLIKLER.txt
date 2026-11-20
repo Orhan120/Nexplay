@@ -1,0 +1,7 @@
+NEXPLAY değişiklik listesi (v1.0.3)
+
+- Unity LevelPlay tamamen kaldırıldı; reklamlar yalnızca Start.io (App ID 210717033).
+- Start.io kodu workflow içine gömülü değildi; gerçek dosyalara taşındı (native-ads/, scripts/, www/).
+- Workflow sadeleştirildi (zip açma/dosya yazma adımları kaldırıldı).
+- SDK sürümü sabitlendi: com.startapp:inapp-sdk:5.3.1.
+- Reklam yükleme hatasında 1 otomatik yeniden deneme eklendi.
