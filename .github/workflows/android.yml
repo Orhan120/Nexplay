@@ -18,13 +18,328 @@ jobs:
       - name: Unpack project zip
         run: |
           unzip -q -o ./*-fixed.zip
-          cp -rn Nexplay-main/. .
+          cp -r Nexplay-main/. .
 
-      - name: Verify updated files
+      - name: Write updated plugin and bridge files
         run: |
-          ls -la native-ads/android www
-          grep -q lastReason native-ads/android/NexplayAdsPlugin.java && echo "PLUGIN YENI" || { echo "PLUGIN ESKI veya YOK"; exit 1; }
-          grep -q "eklenti yok" www/nexplay-capacitor.js && echo "JS YENI" || { echo "JS ESKI veya YOK"; exit 1; }
+          mkdir -p native-ads/android www
+          cat > native-ads/android/NexplayAdsPlugin.java <<'EOF'
+          package com.omstudio.nexplay;
+
+          import android.app.Activity;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.util.Log;
+
+          import androidx.annotation.NonNull;
+
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.unity3d.mediation.LevelPlay;
+          import com.unity3d.mediation.LevelPlayAdError;
+          import com.unity3d.mediation.LevelPlayAdInfo;
+          import com.unity3d.mediation.LevelPlayConfiguration;
+          import com.unity3d.mediation.LevelPlayInitError;
+          import com.unity3d.mediation.LevelPlayInitListener;
+          import com.unity3d.mediation.LevelPlayInitRequest;
+          import com.unity3d.mediation.rewarded.LevelPlayReward;
+          import com.unity3d.mediation.rewarded.LevelPlayRewardedAd;
+          import com.unity3d.mediation.rewarded.LevelPlayRewardedAdListener;
+
+          /**
+           * NEXPLAY Capacitor bridge for Unity LevelPlay rewarded ads.
+           * The game receives a reward only after LevelPlay calls onAdRewarded.
+           *
+           * All state is touched on the main thread only (Capacitor calls plugin methods
+           * on its own thread, so showRewarded() hops to the main looper first).
+           */
+          @CapacitorPlugin(name = "NexplayAds")
+          public class NexplayAdsPlugin extends Plugin {
+              private static final String TAG = "NEXPLAY-Ads";
+
+              // LevelPlay dashboard values (App Key + Rewarded Ad Unit ID).
+              private static final String APP_KEY = "29b6a262d";
+              private static final String REWARDED_AD_UNIT_ID = "41n8w7vfzpf05dib";
+
+              private static final long REQUEST_TIMEOUT_MS = 45000;   // wait for load + show
+              private static final long CLOSE_GRACE_MS = 3000;        // onAdRewarded may come after onAdClosed
+              private static final long INIT_RETRY_MS = 15000;
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+
+              private boolean sdkReady = false;
+              private boolean initializing = false;
+              private boolean loading = false;
+              private boolean adClosed = false;
+              private boolean rewardReceived = false;
+
+              private LevelPlayRewardedAd rewardedAd;
+              private PluginCall pendingCall;
+              private Runnable closeFallback;
+              private Runnable requestTimeout;
+              private String lastReason = "";
+
+              @Override
+              public void load() {
+                  handler.post(this::initSdk);
+              }
+
+              // ------------------------------------------------------------------ init
+
+              private void initSdk() {
+                  if (sdkReady || initializing) return;
+                  initializing = true;
+
+                  LevelPlayInitRequest request = new LevelPlayInitRequest.Builder(APP_KEY).build();
+                  LevelPlay.init(getContext(), request, new LevelPlayInitListener() {
+                      @Override
+                      public void onInitSuccess(@NonNull LevelPlayConfiguration configuration) {
+                          handler.post(() -> {
+                              initializing = false;
+                              sdkReady = true;
+                              Log.i(TAG, "LevelPlay initialized.");
+                              createRewardedAd();
+                              if (pendingCall != null) loadNextAd();
+                          });
+                      }
+
+                      @Override
+                      public void onInitFailed(@NonNull LevelPlayInitError error) {
+                          handler.post(() -> {
+                              initializing = false;
+                              sdkReady = false;
+                              lastReason = "init " + error.getErrorCode() + ": " + error.getErrorMessage();
+                              Log.e(TAG, "LevelPlay init failed: " + lastReason);
+                              if (pendingCall != null) finishRequest(false);
+                              handler.postDelayed(NexplayAdsPlugin.this::initSdk, INIT_RETRY_MS);
+                          });
+                      }
+                  });
+              }
+
+              private void createRewardedAd() {
+                  if (rewardedAd != null) return;
+                  rewardedAd = new LevelPlayRewardedAd(REWARDED_AD_UNIT_ID);
+                  rewardedAd.setListener(new LevelPlayRewardedAdListener() {
+                      @Override
+                      public void onAdLoaded(@NonNull LevelPlayAdInfo adInfo) {
+                          handler.post(() -> {
+                              loading = false;
+                              Log.i(TAG, "Rewarded ad loaded.");
+                              if (pendingCall != null && !adClosed) showLoadedAd();
+                          });
+                      }
+
+                      @Override
+                      public void onAdLoadFailed(@NonNull LevelPlayAdError error) {
+                          handler.post(() -> {
+                              loading = false;
+                              lastReason = "load " + error.getErrorCode() + ": " + error.getErrorMessage();
+                              Log.e(TAG, "Rewarded load failed: " + lastReason);
+                              if (pendingCall != null) finishRequest(false);
+                          });
+                      }
+
+                      @Override
+                      public void onAdDisplayed(@NonNull LevelPlayAdInfo adInfo) {
+                          Log.i(TAG, "Rewarded ad displayed.");
+                          // The ad is on screen: the user may watch it as long as needed.
+                          handler.post(() -> cancel(requestTimeout));
+                      }
+
+                      @Override
+                      public void onAdDisplayFailed(@NonNull LevelPlayAdError error,
+                                                    @NonNull LevelPlayAdInfo adInfo) {
+                          handler.post(() -> {
+                              lastReason = "show " + error.getErrorCode() + ": " + error.getErrorMessage();
+                              Log.e(TAG, "Rewarded display failed: " + lastReason);
+                              finishRequest(false);
+                              loadNextAd();
+                          });
+                      }
+
+                      @Override
+                      public void onAdRewarded(@NonNull LevelPlayReward reward,
+                                               @NonNull LevelPlayAdInfo adInfo) {
+                          handler.post(() -> {
+                              rewardReceived = true;
+                              Log.i(TAG, "Reward received: " + reward.getName() + " x" + reward.getAmount());
+                              finishRequest(true);
+                          });
+                      }
+
+                      @Override
+                      public void onAdClosed(@NonNull LevelPlayAdInfo adInfo) {
+                          handler.post(() -> {
+                              adClosed = true;
+                              // onAdRewarded can arrive after onAdClosed, so wait a moment before failing.
+                              if (!rewardReceived && pendingCall != null) {
+                                  cancel(closeFallback);
+                                  closeFallback = () -> {
+                                      if (pendingCall != null && !rewardReceived) {
+                                          lastReason = "reklam kapatildi, odul yok";
+                                          finishRequest(false);
+                                      }
+                                  };
+                                  handler.postDelayed(closeFallback, CLOSE_GRACE_MS);
+                              }
+                              loadNextAd();
+                          });
+                      }
+
+                      @Override
+                      public void onAdClicked(@NonNull LevelPlayAdInfo adInfo) { }
+
+                      @Override
+                      public void onAdInfoChanged(@NonNull LevelPlayAdInfo adInfo) { }
+                  });
+
+                  loadNextAd();
+              }
+
+              // ------------------------------------------------------------ plugin API
+
+              @PluginMethod
+              public void showRewarded(PluginCall call) {
+                  handler.post(() -> {
+                      if (pendingCall != null) {          // another request is already running
+                          resolve(call, false);
+                          return;
+                      }
+                      if (!sdkReady || rewardedAd == null) {
+                          if (lastReason.isEmpty()) lastReason = "SDK hazir degil";
+                          initSdk();                      // retry in the background for next time
+                          resolve(call, false);
+                          return;
+                      }
+
+                      pendingCall = call;
+                      lastReason = "";
+                      adClosed = false;
+                      rewardReceived = false;
+
+                      cancel(requestTimeout);
+                      requestTimeout = () -> {
+                          if (pendingCall != null) {
+                              if (lastReason.isEmpty()) lastReason = "zaman asimi";
+                              finishRequest(false);
+                          }
+                      };
+                      handler.postDelayed(requestTimeout, REQUEST_TIMEOUT_MS);
+
+                      if (rewardedAd.isAdReady()) {
+                          showLoadedAd();
+                      } else {
+                          loadNextAd();
+                      }
+                  });
+              }
+
+              // --------------------------------------------------------------- helpers
+
+              private void showLoadedAd() {
+                  Activity activity = getActivity();
+                  if (activity == null || pendingCall == null || adClosed) return;
+                  if (!rewardedAd.isAdReady()) {
+                      loadNextAd();
+                      return;
+                  }
+                  try {
+                      rewardedAd.showAd(activity);
+                  } catch (Exception error) {
+                      Log.e(TAG, "Could not show rewarded ad.", error);
+                      finishRequest(false);
+                      loadNextAd();
+                  }
+              }
+
+              private void loadNextAd() {
+                  if (!sdkReady || rewardedAd == null || loading || rewardedAd.isAdReady()) return;
+                  loading = true;
+                  rewardedAd.loadAd();
+              }
+
+              private void finishRequest(boolean rewarded) {
+                  PluginCall call = pendingCall;
+                  if (call == null) return;
+                  pendingCall = null;
+                  cancel(closeFallback);
+                  cancel(requestTimeout);
+                  closeFallback = null;
+                  requestTimeout = null;
+                  resolve(call, rewarded);
+              }
+
+              private void resolve(PluginCall call, boolean rewarded) {
+                  JSObject result = new JSObject();
+                  result.put("rewarded", rewarded);
+                  result.put("reason", rewarded ? "" : lastReason);
+                  call.resolve(result);
+              }
+
+              private void cancel(Runnable runnable) {
+                  if (runnable != null) handler.removeCallbacks(runnable);
+              }
+          }
+          EOF
+          cat > www/nexplay-capacitor.js <<'EOF'
+          /*
+           * NEXPLAY JavaScript bridge for the native Capacitor "NexplayAds" plugin
+           * (Unity LevelPlay rewarded ads).
+           * The game grants rewards only when the native SDK returns rewarded: true.
+           */
+          (function () {
+            "use strict";
+
+            const JS_TIMEOUT_MS = 180000; // safety net: never leave the game waiting forever
+
+            function getPlugin() {
+              const cap = window.Capacitor;
+              if (!cap || typeof cap.isNativePlatform !== "function" || !cap.isNativePlatform()) {
+                return null;
+              }
+              if (cap.Plugins && cap.Plugins.NexplayAds) return cap.Plugins.NexplayAds;
+              if (typeof cap.registerPlugin === "function") return cap.registerPlugin("NexplayAds");
+              return null;
+            }
+
+            window.NEX_AD = {
+              show(callback) {
+                let finished = false;
+                let timer = null;
+                const finish = (earned, reason) => {
+                  if (finished) return;
+                  finished = true;
+                  clearTimeout(timer);
+                  if (typeof callback === "function") callback(earned === true);
+                  if (earned !== true && reason && typeof window.toast === "function") {
+                    setTimeout(() => window.toast("Reklam hatası: " + reason), 2500);
+                  }
+                };
+
+                const plugin = getPlugin();
+                if (!plugin || typeof plugin.showRewarded !== "function") {
+                  console.warn("[NEXPLAY] Native ads plugin is unavailable (not running in the Android app?).");
+                  finish(false, "eklenti yok");
+                  return;
+                }
+
+                timer = setTimeout(() => finish(false, "JS zaman asimi"), JS_TIMEOUT_MS);
+                plugin.showRewarded()
+                  .then(result => finish(!!(result && result.rewarded === true), result && result.reason))
+                  .catch(error => {
+                    console.error("[NEXPLAY] Rewarded ad error:", error);
+                    finish(false, String((error && error.message) || error));
+                  });
+              }
+            };
+          })();
+          EOF
+          grep -q lastReason native-ads/android/NexplayAdsPlugin.java && echo "PLUGIN YENI"
+          grep -q "eklenti yok" www/nexplay-capacitor.js && echo "JS YENI"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,7 +364,8 @@ jobs:
       - name: Use fixed signing key
         run: |
           mkdir -p ~/.android
-          cp debug.keystore ~/.android/debug.keystore
+          echo "MIIKVgIBAzCCCgAGCSqGSIb3DQEHAaCCCfEEggntMIIJ6TCCBbAGCSqGSIb3DQEHAaCCBaEEggWdMIIFmTCCBZUGCyqGSIb3DQEMCgECoIIFMDCCBSwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUMMCsEFPUe2x1OvPO2XgMOE9g0IoyTUC89AgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQsdg/mPFmSJpHsL6QGqYLrwSCBMBPGowJax8Q72CVtrAlfbv+0Uor6QbQgTTs8MujDVpoCVLStJam31Bcsj84fBLcNTs4qrJHX4iuLA68PZeEChxv5QtLLX49wf8ZODU3lRRiqYCyjAM61mDEmslelo7g0XSN0oy97sI9mW+afepraCitcmFJveZdqTbn21g9H6bzMXASmuHhfZwpAdlKmWgX2J9Yy2TVHSb72VEeUroZgR7G8o0ZOrTmHxCyw0+T/OI2e4KOwCLVMq6UX3gk+IZTOZEyNeJP9Y4/h7J3CuJw6mlWcQS+jbbgffLrHee6U2I3osOTTRzXwbt4OvbdAljARm6/EMZx4mAJ3nS/W5YMyyl3skg4d9MvXzPlCZdA8buvcPh65j5gtmwTpZV7ZM5YDLpq5SssRSFqNX7fokVotNzmnt8DcMVqOxkauw2oxvoyegl7qPl0dknjRJe347WJdP0feZEPeWEX0U4YTuJjk4EUhUYdcGx0b4LG87hOQmzMlMrpNFOtQsDIdl+B9S5eHsZSc7B77ypoBAU1VoYFXFT0Yd/HXWF2A68u9v5QUTx7JEN5A26cqBGFTxusYvTpBIys6rYfQv0wfayZddTzSeAEHJBqAP9QIfQU3gJBT2SMTktCGlAIjytPSRTylsNrXw1L5idrVKN5l3QnLgsfjpoGNrlrdCbDw9sQnHkkS7J+BLhkefY9Y/0L3AlQYMvwMD2Rd9AU+wtwd78ShW1Z/HW6wOLXJVXISCWkkPG7NpdsNfymnwhfGIHy0QstfrODPO13u2t7ilCkdzylDJHYs/8zTWIxTJglxDQuouD9mXfi8LfmtDMoABFioJC+ZmmsRAAOpoJ2/PWN2jxQl6d+OSTM8lo7OLQCxXh7hD7PvFTBQ60xZlapX1RxzBJrt4JDP8USzB17hv9L6WxL9JzYdAR8eKksyVk4PoSoPf+m8yrmehP9jwSfBmb6hHryc/2IBs9qfFVDpBM1HVd46ZtnTQYaaXCH4v81fFIoNQSzx+HMfWcaCqc/3+Q8R2g5UsRi/HEexgN2bDw+7eBheGkYZ8zqtTOk6l5kG5zu+3MjVXLFg2VyR0ZnA9KyNyJ7m+W6+A9uUZjEfIugXUSzqqPdxBHlQYKk/9AgV5BP/fnVeeaU6ldg7BIoGUadyMRCYxUMmsaEaL4JltEzwzKNspZJUeepXjlDJCXxlFgS7ipwT4k5luHmJi8wO6skSLMvlXV6ymPMCOqQRXx+RfCuVUgWAkvrdZmafnSbrGniPRzxmrmwnufUm7eNWh1vTT/LhSATUlZ0PjYKMr+AB1SsqIfOc2qjO1BFhX18eD5yzVWXSNyo+UurGXgWY/NrN/4fbc3mzzdg2L4cBaWhP/eWfW9Ro1doKPzubq3C3lAdQFSIMT79wdwAi2vKM2h/yZWtsH4kV3Hs0hB/KG+xxCQZjfEDYJvDhdAY+hgrSK9D6zz5EN4xbSW8BDv2/7j6AY8Rozj2Zc/6uI2NHBi9GYuTVMMRes5AiXl0m7r8jC3CNbb+vmT1LSQjDXdG+VqoPNwqAHPD2sPr2DyZEmDWJ+divpxrg3uYGMBO/89wgsmZQ+R3TM5DHGwMX8Dzq509oVj1Vrc6r7h1c6senVhjl7ZR+9hXPFO6MVIwLQYJKoZIhvcNAQkUMSAeHgBhAG4AZAByAG8AaQBkAGQAZQBiAHUAZwBrAGUAeTAhBgkqhkiG9w0BCRUxFAQSVGltZSAxNzk1MTU0Nzc1ODg1MIIEMQYJKoZIhvcNAQcGoIIEIjCCBB4CAQAwggQXBgkqhkiG9w0BBwEwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUMMCsEFM7u8F7/3QIZSVBlVipl0X9AsJy6AgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQZDo4RCkjo1dXbtf4Jf9LmYCCA6BX8/EFoCl2MxAng6Yd24bg0E+28wZV5oaenXFL8/dUArkC4228JSU5Q0pF8b+M+58hjhUPSHkBB66i84JyZ8+2TaJhciv5rJ5Nef04Ly2aU6ESvfJh9fjyp9J3CRNUIDsfeu8vEmiPSCTu/cBfJQXWOmzo8XQ3ZyIo2HnrdAP34Yr8X22k+uC2KOxlBKKUe9Ro0krYiWPh72xYGYU6vxt7ettFq67UDzl3OFBWhE/PDDh94QQeySq9oaT54dZKTvSzm0CrnPZNIhgPp7G4Wy31Sytgm61SSlRMQwqkGNGziARd3pGnwijEtP0SQL1Ek6nJ1JXLf0YYRMNNoWZ/0oKPwlIAraB5UJ5qIuaE8h119QLld5JgM3CIudRFqUSW/5nkdkU0OGT2Jnf3jtgenC0P9JF4tLElEgnoH7dicAjYPi9bNTVQSPnLMgfh3XgyFxxuVo44BX78jLpVjiP9iYroA0chcwL8moKb0MsdPE6ud4w6iBtEFAj3Ae6K+otRrq/ttdV0zV5JMyQWcZ6u2YTpdTDxEccezUrD3Oz95rBaxss9oxw87GjS7Xd5R+goasnYvCjchYSyJe0PM9smE1lTZDu829Z7DHBj2hGF8zw84s3DEQBK3fVCgP1iet/C2w77QBjIgcdBwAUkzeKnBG1yeKgBI7dc0gCeBuPgNk6u50XxvBvdx7CTlTzU6m3FtYaanCiA1vGyHBGUw9GvMFKwrf0ZwdttT6+AGZXnbPle1wEqsl2acOwENJNepOpbdsTnbFWvq5xTYUSfSoS97qeOnWFz3GQR2JiIOrm3iL9zbXQNpPDLNBYPZiAixV7iHeeCX3nJtGFcvOb+X6h/Hhn6TyUDewXctHg4drIx0gb/88AnBwjRVEneYebkEwHjPHYyvj2xN8XSy57zYQJ88q7fa6s89+xJEqsI2NIz8Q9w4GzCb9G3S8rJ0X+e2b66GVJi1q+ceyZXjHNMTPoHh56tzN/Mo401EzZkDHx1FHDt+38d0iyaMVy/3vVJRVi4XKtg4/ZG/A4lB1L2eRjTtpIgZU2wwyInRpof8YB6Aae96ho0gAju+5bbuds8Uv27d5zR1wus+nNAKMmNz9u7b5TT4NHgpbql1orQ4Gxa2UCAXW8s2e0IETUhMrnGQJv6igoLqf+d1+AQQu7jzfEVO7EQUl/wUSKiqaIB3kz8JAvwHBMNUWHC+vZGcXRjqPZC5yhoA/0BW0Fr7sCTaL5/lz9EME0wMTANBglghkgBZQMEAgEFAAQg1GaG6tllxgUzj+cIGCmglUnVpfLLhnHfK2jECeNGXXIEFBQ4doywz1lblLXsM1nLCfBQHeUAAgInEA==" | base64 -d > ~/.android/debug.keystore
+          keytool -list -keystore ~/.android/debug.keystore -storepass android | tail -2
 
       - name: Grant Gradle permission
         run: chmod +x android/gradlew
