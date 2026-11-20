@@ -43,17 +43,12 @@ jobs:
           import com.startapp.sdk.adsbase.adlisteners.AdDisplayListener;
           import com.startapp.sdk.adsbase.adlisteners.AdEventListener;
 
-          /**
-           * NEXPLAY Capacitor bridge for Start.io rewarded video.
-           * The game gets a reward only after Start.io calls onVideoCompleted.
-           * All state is touched on the main thread only.
-           */
           @CapacitorPlugin(name = "NexplayAds")
           public class NexplayAdsPlugin extends Plugin {
               private static final String TAG = "NEXPLAY-Ads";
 
               private static final String APP_ID = "210717033";
-              private static final boolean TEST_ADS = true;   // set to false for live ads
+              private static final boolean TEST_ADS = false;
 
               private static final long LOAD_TIMEOUT_MS = 30000;
               private static final long CLOSE_GRACE_MS = 1500;
@@ -218,13 +213,6 @@ jobs:
           }
           EOF
           cat > scripts/prepare-android.mjs <<'EOF'
-          /*
-           * Run AFTER `npx cap add android` / `npx cap sync android`.
-           * - adds the Start.io SDK dependency
-           * - adds ad-related manifest permissions
-           * - copies NexplayAdsPlugin.java next to MainActivity and registers it
-           * Safe to run multiple times.
-           */
           import fs from 'node:fs';
           import path from 'node:path';
 
@@ -256,7 +244,6 @@ jobs:
           if (!activityPath) throw new Error('Capacitor MainActivity.java not found.');
           const packageDir = path.dirname(activityPath);
 
-          // ---- 1) SDK dependency (Capacitor template already uses google() + mavenCentral())
           const gradleGroovy = path.join(androidDir, 'app', 'build.gradle');
           const gradleKts = path.join(androidDir, 'app', 'build.gradle.kts');
           const gradlePath = fs.existsSync(gradleGroovy) ? gradleGroovy : gradleKts;
@@ -269,7 +256,6 @@ jobs:
             : `implementation '${SDK_DEPENDENCY}'`;
 
           if (!gradle.includes('com.startapp:inapp-sdk')) {
-            // Last top-level "dependencies {" of the app module.
             const idx = gradle.lastIndexOf('dependencies {');
             if (idx >= 0) {
               const at = idx + 'dependencies {'.length;
@@ -281,7 +267,6 @@ jobs:
             console.log('Added Start.io dependency.');
           }
 
-          // ---- 2) Manifest permissions ---------------------------------------------
           const manifestPath = path.join(androidDir, 'app', 'src', 'main', 'AndroidManifest.xml');
           if (fs.existsSync(manifestPath)) {
             let manifest = fs.readFileSync(manifestPath, 'utf8');
@@ -310,19 +295,16 @@ jobs:
             if (changed) fs.writeFileSync(manifestPath, manifest);
           }
 
-          // ---- 3) Plugin source -----------------------------------------------------
           const pluginSource = path.join(root, 'native-ads', 'android', 'NexplayAdsPlugin.java');
           if (!fs.existsSync(pluginSource)) {
             throw new Error('Missing native-ads/android/NexplayAdsPlugin.java');
           }
-          // The plugin must live in the same package as MainActivity.
           const pkgMatch = fs.readFileSync(activityPath, 'utf8').match(/^\s*package\s+([\w.]+)\s*;/m);
           if (!pkgMatch) throw new Error('Could not read MainActivity package name.');
           let pluginCode = fs.readFileSync(pluginSource, 'utf8')
             .replace(/^\s*package\s+[\w.]+\s*;/m, `package ${pkgMatch[1]};`);
           fs.writeFileSync(path.join(packageDir, 'NexplayAdsPlugin.java'), pluginCode);
 
-          // ---- 4) Register the plugin in MainActivity -------------------------------
           let activity = fs.readFileSync(activityPath, 'utf8');
           if (!activity.includes('NexplayAdsPlugin.class')) {
             const classPattern = /(public\s+class\s+MainActivity\s+extends\s+BridgeActivity\s*\{)/;
@@ -339,15 +321,10 @@ jobs:
           console.log('NEXPLAY Start.io plugin copied and registered.');
           EOF
           cat > www/nexplay-capacitor.js <<'EOF'
-          /*
-           * NEXPLAY JavaScript bridge for the native Capacitor "NexplayAds" plugin
-           * (Unity LevelPlay rewarded ads).
-           * The game grants rewards only when the native SDK returns rewarded: true.
-           */
           (function () {
             "use strict";
 
-            const JS_TIMEOUT_MS = 180000; // safety net: never leave the game waiting forever
+            const JS_TIMEOUT_MS = 180000;
 
             function getPlugin() {
               const cap = window.Capacitor;
@@ -375,7 +352,7 @@ jobs:
 
                 const plugin = getPlugin();
                 if (!plugin || typeof plugin.showRewarded !== "function") {
-                  console.warn("[NEXPLAY] Native ads plugin is unavailable (not running in the Android app?).");
+                  console.warn("[NEXPLAY] Native ads plugin is unavailable.");
                   finish(false, "eklenti yok");
                   return;
                 }
