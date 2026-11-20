@@ -1,39 +1,42 @@
 /*
- * NEXPLAY Capacitor ↔ native ads bridge.
- * The native plugin must be installed and configured before real ads can show.
- * Rewards are granted only after the native SDK reports onAdRewarded.
+ * NEXPLAY JavaScript bridge for the native Capacitor LevelPlay plugin.
+ * The app grants in-game rewards only when the native SDK returns rewarded: true.
  */
 (function () {
-  const getPlugin = () => {
+  "use strict";
+
+  function getPlugin() {
     const cap = window.Capacitor;
-    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    if (!cap || typeof cap.isNativePlatform !== "function" || !cap.isNativePlatform()) {
+      return null;
+    }
     return cap.Plugins && cap.Plugins.NexplayAds
       ? cap.Plugins.NexplayAds
       : null;
-  };
+  }
 
   window.NEX_AD = {
-    async show(callback) {
-      let settled = false;
+    show(callback) {
+      let finished = false;
       const finish = (earned) => {
-        if (settled) return;
-        settled = true;
+        if (finished) return;
+        finished = true;
         if (typeof callback === "function") callback(earned === true);
       };
 
-      try {
-        const plugin = getPlugin();
-        if (!plugin || typeof plugin.showRewarded !== "function") {
-          console.warn("[NEXPLAY] Native LevelPlay plugin is not installed/configured.");
-          finish(false);
-          return;
-        }
-        const result = await plugin.showRewarded();
-        finish(!!(result && result.rewarded === true));
-      } catch (error) {
-        console.error("[NEXPLAY] Rewarded ad failed:", error);
+      const plugin = getPlugin();
+      if (!plugin || typeof plugin.showRewarded !== "function") {
+        console.warn("[NEXPLAY] Native LevelPlay plugin is unavailable.");
         finish(false);
+        return;
       }
+
+      plugin.showRewarded()
+        .then(result => finish(!!(result && result.rewarded === true)))
+        .catch(error => {
+          console.error("[NEXPLAY] LevelPlay rewarded ad error:", error);
+          finish(false);
+        });
     }
   };
 })();
