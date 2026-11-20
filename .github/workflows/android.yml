@@ -16,9 +16,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Unpack project zip
-        run: |
-          unzip -q -o Nexplay-fixed.zip
+                run: |
+          unzip -q -o ./*-fixed.zip
           cp -r Nexplay-main/. .
+
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
