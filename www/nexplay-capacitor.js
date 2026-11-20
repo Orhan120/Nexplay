@@ -1,12 +1,8 @@
-/*
- * NEXPLAY JavaScript bridge for the native Capacitor "NexplayAds" plugin
- * (Unity LevelPlay rewarded ads).
- * The game grants rewards only when the native SDK returns rewarded: true.
- */
+/* NEXPLAY JS bridge -> native Capacitor "NexplayAds" plugin (Start.io rewarded video). Reward only when native returns rewarded:true. */
 (function () {
   "use strict";
 
-  const JS_TIMEOUT_MS = 180000; // safety net: never leave the game waiting forever
+  const JS_TIMEOUT_MS = 180000;
 
   function getPlugin() {
     const cap = window.Capacitor;
@@ -34,7 +30,7 @@
 
       const plugin = getPlugin();
       if (!plugin || typeof plugin.showRewarded !== "function") {
-        console.warn("[NEXPLAY] Native ads plugin is unavailable (not running in the Android app?).");
+        console.warn("[NEXPLAY] Native ads plugin is unavailable.");
         finish(false, "eklenti yok");
         return;
       }
