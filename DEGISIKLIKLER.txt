@@ -1,0 +1,18 @@
+NEXPLAY değişiklik listesi (v1.0.2)
+
+Düzeltilen hatalar
+1) Workflow olmayan `npm run build:android` komutunu çağırıyordu -> package.json'a eklendi.
+2) Workflow `npx cap add android` yapmıyordu, `www/` klasörü yoktu -> eklendi/oluşturuldu.
+3) Dosya yolları (www/, native-ads/, scripts/) belgelerle uyuşmuyordu -> klasör yapısı düzeltildi.
+4) Capacitor 8 için Node 22 + JDK 21 gerekir; workflow Node 20 / JDK 17 idi -> güncellendi.
+5) capacitor.config.ts içindeki kaldırılmış `bundledWebRuntime` ayarı silindi.
+6) README/prepare script "unity-ads 4.12.5" diyordu, kod LevelPlay kullanıyordu -> LevelPlay'e birleştirildi.
+7) Workflow artifact yolu/adı ve `master` dalı düzeltildi.
+
+Reklam eklentisi
+- Tüm SDK çağrıları ana thread'e alındı (Capacitor farklı thread'den çağırıyordu).
+- SDK başlatma başarısız olursa otomatik yeniden deneme eklendi.
+- Reklam gösterilirken zaman aşımı iptal edilir; 120 sn yerine 45 sn yükleme zaman aşımı.
+- JS tarafında güvenlik zaman aşımı + registerPlugin yedeği eklendi.
+- Manifest'e ACCESS_NETWORK_STATE ve AD_ID izinleri otomatik eklenir.
+- prepare script tekrar çalıştırılabilir (idempotent), paket adını MainActivity'den okur.
