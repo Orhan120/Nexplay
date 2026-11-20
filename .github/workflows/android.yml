@@ -20,6 +20,14 @@ jobs:
           unzip -q -o ./*-fixed.zip
           cp -r Nexplay-main/. .
 
+      - name: Fix LevelPlay imports
+        run: |
+          f=native-ads/android/NexplayAdsPlugin.java
+          sed -i 's/com\.unity3d\.mediation\.LevelPlayReward;/com.unity3d.mediation.rewarded.LevelPlayReward;/' $f
+          sed -i 's/com\.unity3d\.mediation\.LevelPlayRewardedAd;/com.unity3d.mediation.rewarded.LevelPlayRewardedAd;/' $f
+          sed -i 's/com\.unity3d\.mediation\.LevelPlayRewardedAdListener;/com.unity3d.mediation.rewarded.LevelPlayRewardedAdListener;/' $f
+          grep -n "^import com.unity3d" $f
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
