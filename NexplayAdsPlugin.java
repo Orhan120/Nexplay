@@ -19,9 +19,9 @@ import com.unity3d.mediation.LevelPlayConfiguration;
 import com.unity3d.mediation.LevelPlayInitError;
 import com.unity3d.mediation.LevelPlayInitListener;
 import com.unity3d.mediation.LevelPlayInitRequest;
-import com.unity3d.mediation.LevelPlayReward;
-import com.unity3d.mediation.LevelPlayRewardedAd;
-import com.unity3d.mediation.LevelPlayRewardedAdListener;
+import com.unity3d.mediation.rewarded.LevelPlayReward;
+import com.unity3d.mediation.rewarded.LevelPlayRewardedAd;
+import com.unity3d.mediation.rewarded.LevelPlayRewardedAdListener;
 
 /**
  * NEXPLAY Capacitor bridge for Unity LevelPlay rewarded ads.
@@ -54,6 +54,7 @@ public class NexplayAdsPlugin extends Plugin {
     private PluginCall pendingCall;
     private Runnable closeFallback;
     private Runnable requestTimeout;
+    private String lastReason = "";
 
     @Override
     public void load() {
@@ -84,7 +85,8 @@ public class NexplayAdsPlugin extends Plugin {
                 handler.post(() -> {
                     initializing = false;
                     sdkReady = false;
-                    Log.e(TAG, "LevelPlay init failed: " + error);
+                    lastReason = "init " + error.getErrorCode() + ": " + error.getErrorMessage();
+                    Log.e(TAG, "LevelPlay init failed: " + lastReason);
                     if (pendingCall != null) finishRequest(false);
                     handler.postDelayed(NexplayAdsPlugin.this::initSdk, INIT_RETRY_MS);
                 });
@@ -109,7 +111,8 @@ public class NexplayAdsPlugin extends Plugin {
             public void onAdLoadFailed(@NonNull LevelPlayAdError error) {
                 handler.post(() -> {
                     loading = false;
-                    Log.e(TAG, "Rewarded load failed: " + error);
+                    lastReason = "load " + error.getErrorCode() + ": " + error.getErrorMessage();
+                    Log.e(TAG, "Rewarded load failed: " + lastReason);
                     if (pendingCall != null) finishRequest(false);
                 });
             }
@@ -125,7 +128,8 @@ public class NexplayAdsPlugin extends Plugin {
             public void onAdDisplayFailed(@NonNull LevelPlayAdError error,
                                           @NonNull LevelPlayAdInfo adInfo) {
                 handler.post(() -> {
-                    Log.e(TAG, "Rewarded display failed: " + error);
+                    lastReason = "show " + error.getErrorCode() + ": " + error.getErrorMessage();
+                    Log.e(TAG, "Rewarded display failed: " + lastReason);
                     finishRequest(false);
                     loadNextAd();
                 });
@@ -149,7 +153,10 @@ public class NexplayAdsPlugin extends Plugin {
                     if (!rewardReceived && pendingCall != null) {
                         cancel(closeFallback);
                         closeFallback = () -> {
-                            if (pendingCall != null && !rewardReceived) finishRequest(false);
+                            if (pendingCall != null && !rewardReceived) {
+                                lastReason = "reklam kapatildi, odul yok";
+                                finishRequest(false);
+                            }
                         };
                         handler.postDelayed(closeFallback, CLOSE_GRACE_MS);
                     }
@@ -177,18 +184,23 @@ public class NexplayAdsPlugin extends Plugin {
                 return;
             }
             if (!sdkReady || rewardedAd == null) {
+                if (lastReason.isEmpty()) lastReason = "SDK hazir degil";
                 initSdk();                      // retry in the background for next time
                 resolve(call, false);
                 return;
             }
 
             pendingCall = call;
+            lastReason = "";
             adClosed = false;
             rewardReceived = false;
 
             cancel(requestTimeout);
             requestTimeout = () -> {
-                if (pendingCall != null) finishRequest(false);
+                if (pendingCall != null) {
+                    if (lastReason.isEmpty()) lastReason = "zaman asimi";
+                    finishRequest(false);
+                }
             };
             handler.postDelayed(requestTimeout, REQUEST_TIMEOUT_MS);
 
@@ -238,6 +250,7 @@ public class NexplayAdsPlugin extends Plugin {
     private void resolve(PluginCall call, boolean rewarded) {
         JSObject result = new JSObject();
         result.put("rewarded", rewarded);
+        result.put("reason", rewarded ? "" : lastReason);
         call.resolve(result);
     }
 
