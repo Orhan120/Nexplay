@@ -22,26 +22,29 @@
     show(callback) {
       let finished = false;
       let timer = null;
-      const finish = (earned) => {
+      const finish = (earned, reason) => {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
         if (typeof callback === "function") callback(earned === true);
+        if (earned !== true && reason && typeof window.toast === "function") {
+          setTimeout(() => window.toast("Reklam hatası: " + reason), 2500);
+        }
       };
 
       const plugin = getPlugin();
       if (!plugin || typeof plugin.showRewarded !== "function") {
         console.warn("[NEXPLAY] Native ads plugin is unavailable (not running in the Android app?).");
-        finish(false);
+        finish(false, "eklenti yok");
         return;
       }
 
-      timer = setTimeout(() => finish(false), JS_TIMEOUT_MS);
+      timer = setTimeout(() => finish(false, "JS zaman asimi"), JS_TIMEOUT_MS);
       plugin.showRewarded()
-        .then(result => finish(!!(result && result.rewarded === true)))
+        .then(result => finish(!!(result && result.rewarded === true), result && result.reason))
         .catch(error => {
           console.error("[NEXPLAY] Rewarded ad error:", error);
-          finish(false);
+          finish(false, String((error && error.message) || error));
         });
     }
   };
